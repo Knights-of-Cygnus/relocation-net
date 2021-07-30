@@ -17,7 +17,7 @@ NUM_OUTPUT_CHANNELS = 64
 
 NUM_EPOCHS = 6000
 
-LEARNING_RATE = 1e-6
+LEARNING_RATE = 1e-3
 MOMENTUM = 0.9
 BATCH_SIZE = 16
 SAVE_DIR = Path(__file__).parent / 'checkpoints'
@@ -71,17 +71,18 @@ def train(model: nn.Module, train_dataloader: DataLoader, device: torch.device):
 
         if is_better:
             prev_loss = loss_f
-            torch.save(model.state_dict(), os.path.join(SAVE_DIR, "model_best.pth"))
+            torch.save(model.state_dict(), os.path.join(SAVE_DIR, f"model_best_epo{epoch}.pth"))
 
         print("Epoch #{}\tLoss: {:.8f}\t Time: {:2f}s".format(epoch + 1, loss_f, delta))
 
 
 def train_shitnet():
     model = ShitNet()
-    scene: Scenes = 'chess'
-    mode: Modes = 2
-    num_workers = 4
-    path = Path(__file__).absolute().parent.parent.parent / 'Datasets' / '7scenes'
+    from config import scene, mode, num_workers, path
+    # scene: Scenes = 'chess'
+    # mode: Modes = 2
+    # num_workers = 4
+    # path = Path(__file__).absolute().parent.parent.parent / 'Datasets' / '7scenes'
     transform = transforms.Compose([
         transforms.Resize(256),
         # transforms.CenterCrop(256),

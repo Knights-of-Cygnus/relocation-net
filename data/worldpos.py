@@ -3,8 +3,12 @@ from PIL.Image import Image
 import numpy as np
 from validation.projection import Point2d, pixel_to_camera_matrix
 from typing import Iterable
+from deprecation import deprecated
+
+invalid_depth = 65535
 
 
+@deprecated
 def assoc_z_axis(ndi: np.ndarray, homo: bool=True):
     @np.vectorize
     def iter():
@@ -21,16 +25,19 @@ def assoc_z_axis(ndi: np.ndarray, homo: bool=True):
     return np.array(iter())
 
 
-def assoc_z_axis_cartesian(ndi: np.ndarray):
+def assoc_z_axis_cartesian(ndi: np.ndarray) -> np.ndarray:
     r, c = ndi.shape
     pts = np.array(np.meshgrid(range(r), range(c))).T.reshape(r, c, 2)
-    return np.concatenate((pts, np.expand_dims(ndi, axis=2)), axis=2)
+    homo_pixel = to_homo(pts)
+    return ndi.reshape((r, c, 1)) * homo_pixel
+    # return np.concatenate((pts, np.expand_dims(ndi, axis=2)), axis=2)
 
 
 def product2(it1: Iterable, it2: Iterable) -> np.ndarray:
     return np.array(np.meshgrid(it1, it2)).T.reshape(-1, 2)
 
 
+@deprecated
 def get_world_pos(dimage: Image, pos: np.ndarray, scale_ratio: int = 4):
     w, h = dimage.size
     index = np.ix_(range(0, h, scale_ratio), range(0, w, scale_ratio))
@@ -38,7 +45,7 @@ def get_world_pos(dimage: Image, pos: np.ndarray, scale_ratio: int = 4):
     assert dimage.mode == 'I'
     depth_array = np.array(dimage)[index]
     homo_coords = assoc_z_axis(depth_array, homo=True)
-    return np.dot(homo_coords, pos)
+    return np.matmul(homo_coords, pos.T)
 
 
 def to_pixel_pos(dimage: Image) -> np.ndarray:
@@ -49,7 +56,7 @@ def to_pixel_pos(dimage: Image) -> np.ndarray:
 
 def to_camera_pos(pixel_pos: np.ndarray, focus: Point2d, center: Point2d) -> np.ndarray:
     pixel_to_camera = pixel_to_camera_matrix(focus, center)
-    return np.matmul(pixel_pos, pixel_to_camera)
+    return np.matmul(pixel_pos, pixel_to_camera.T)
 
 
 def down_sampling(img: np.ndarray, scale_ratio: int = 4):
@@ -64,12 +71,14 @@ def to_homo(array: np.ndarray) -> np.ndarray:
 
 
 def to_cartesian(coord: np.ndarray) -> np.ndarray:
-    return np.delete(coord / np.expand_dims(coord[..., 3], axis=2), 3, 2)
+    last_axis = len(coord.shape) - 1
+    last_pos = coord.shape[last_axis] - 1
+    return np.delete(coord / np.expand_dims(coord[..., last_pos], axis=last_axis), last_pos, last_axis)
 
 
 def camera_to_world_pos(img: np.ndarray, camera_to_world: np.ndarray) -> np.ndarray:
     homo_img = to_homo(img)
-    return np.matmul(homo_img, camera_to_world)
+    return np.matmul(homo_img, camera_to_world.T)
 
 
 def get_world_pos_tensor(tensor: torch.Tensor, pos: np.ndarray, scale_ratio: int = 4):
@@ -86,10 +95,23 @@ def pixel_to_world_pos_tensor(
 ) -> torch.Tensor:
     # w * h * 1 matrix -> w * h * 3
     # [[[1]]] -> [[[0, 0, 1]]] with its coordinates
+    # Pixel_pos = Z_c * (u, v, 1)
     pixel_pos = assoc_z_axis_cartesian(tensor.numpy().squeeze())
+    # Clamp invalid numbers.
+    # if Z_c = 0 then last coord must be 0.
+    # In such case, just override it to 1.
+    pixel_pos[..., -1][pixel_pos[..., -1] == 0] = 1
+
+    # camera_pos = pixel_pos.T * inv(intrinsics_matrix).T
     camera_pos = to_camera_pos(pixel_pos, focus, center)
+
+    # down sampling by scale ratio
     camera_pos = down_sampling(camera_pos, scale_ratio)
+
+    # world_pos = (camera_pos, 1) * camera_to_world.T
     world_pos = camera_to_world_pos(camera_pos, camera_to_world)
+
+    # Transform back to cartesian coords.
     cartesian_world_pos = to_cartesian(world_pos)
     return torch.from_numpy(cartesian_world_pos)
 

@@ -17,6 +17,7 @@ import sys
 import pickle
 from pathlib import Path
 from typing import Literal, Optional, Union
+from inspect import signature
 
 from .poseutil import process_poses
 
@@ -168,7 +169,11 @@ class SevenScenes(data.Dataset):
         if self.target_transform is not None:
             assert self.mode == 2
             depth_image = img[1]
-            pose = self.target_transform(depth_image, pose)
+            arity = len(signature(self.target_transform).parameters)
+            if arity == 2:
+                pose = self.target_transform(depth_image, pose)
+            elif arity == 3:
+                pose = self.target_transform(img[0], depth_image, pose)
 
         return img, pose
 

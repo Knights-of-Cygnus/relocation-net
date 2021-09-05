@@ -22,6 +22,7 @@ def pixel_to_camera_matrix(focus: Point2d, center: Point2d) -> np.ndarray:
 
 default_focus: Point2d = (585, 585)
 default_center: Point2d = (320, 240)
+# default_center: Point2d = (240, 320)
 
 # camera to pixel
 default_intrinsics_matrix = intrinsics_matrix(default_focus, default_center)

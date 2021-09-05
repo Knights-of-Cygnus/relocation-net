@@ -7,12 +7,10 @@ from numpy.typing import ArrayLike
 
 from data.worldpos import product2, to_homo, to_cartesian
 from .projection import default_intrinsics_matrix
-from transforms3d import quaternions as tsq
-from scipy.spatial.transform.rotation import Rotation
 
 
-def solve_pnp(world_pos: np.ndarray, pixel_pos: np.ndarray, intrinsics_mat: np.ndarray):
-    _retval, rvecs, tvecs, _inliers = cv.solvePnPRansac(world_pos, pixel_pos, intrinsics_mat, np.zeros(5))
+def solve_pnp(world_pos: np.ndarray, camera_pos: np.ndarray, intrinsics_mat: np.ndarray):
+    _retval, rvecs, tvecs, _inliers = cv.solvePnPGeneric(world_pos, camera_pos, intrinsics_mat, np.zeros(5))
     return rvecs, tvecs
 
 
@@ -35,21 +33,22 @@ def camera_pos_from_output(mat: np.ndarray, depth_map: ArrayLike, intrinsics_mat
     # The y axis of sampled coords.
     wr = range(0, w * scale, scale)
     # To get Z_c, we need to sample depth image.
-    sampled_depth = depth_map[np.ix_(hr, wr)]
+    # sampled_depth = depth_map[np.ix_(hr, wr)]
     # Combine Grid x and y axis.
     # pts is the sampled points (in pixel coords). (u, v)
     pts = np.array(np.meshgrid(hr, wr)).T.reshape(len(hr), len(wr), 2)
     # (u, v, 1)
-    pos = to_homo(pts)
+    # pos = to_homo(pts)
     # Z_c * (u, v, 1)
-    homo_pixel = pos * np.expand_dims(sampled_depth, 2)
+    # homo_pixel = pos * np.expand_dims(sampled_depth, 2)
+    # homo_pixel[..., -1][homo_pixel[..., -1] == 0] = 1
 
     # camera_pos = pixel_pos(T) * inv(intrinsics).T
-    camera_pos = np.matmul(homo_pixel, inverse_matrix(intrinsics_mat).T)
-    camera_pos[..., -1][camera_pos[..., -1] == 0] = 1
+    # camera_pos = np.matmul(homo_pixel, inverse_matrix(intrinsics_mat).T)
 
     # sampled points (in camera pos)
-    axis = to_cartesian(camera_pos)
+    # axis = to_cartesian(camera_pos)
+    axis = pts.astype(np.float_)
     # SolvePnPRansac need vector of points, just reshape them.
     return solve_pnp(mat.reshape(-1, 3), axis.reshape(-1, 2), intrinsics_mat.astype(np.float32))
 

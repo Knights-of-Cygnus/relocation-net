@@ -4,12 +4,38 @@ import numpy as np
 from validation.projection import Point2d, pixel_to_camera_matrix
 from typing import Iterable
 from deprecation import deprecated
+from torchvision import transforms
 
 invalid_depth = 65535
 
 
+def transform_with_inverse(ts):
+    norms = []
+    for trans in reversed(ts):
+        std = trans.std
+        mean = trans.mean
+        norms.append(transforms.Normalize(
+            std=[1 / x for x in std],
+            mean=[0 for x in mean]
+        ))
+        norms.append(transforms.Normalize(
+            std=[1 for x in std],
+            mean=[-x for x in mean]
+        ))
+
+    return transforms.Compose(ts), transforms.Compose(norms)
+
+
+world_point_transform, inverse_world_point_transform = transform_with_inverse([
+    transforms.Normalize(
+        std=[1.04586485, 0.92645615, 1.72081834],
+        mean=[-0.03427729, -0.19971056,  1.48099369]
+    )
+])
+
+
 @deprecated
-def assoc_z_axis(ndi: np.ndarray, homo: bool=True):
+def assoc_z_axis(ndi: np.ndarray, homo: bool = True):
     @np.vectorize
     def iter():
         ys = []
@@ -22,9 +48,11 @@ def assoc_z_axis(ndi: np.ndarray, homo: bool=True):
                 xs.append(coord)
             ys.append(xs)
         return ys
+
     return np.array(iter())
 
 
+@deprecated
 def assoc_z_axis_cartesian(ndi: np.ndarray) -> np.ndarray:
     r, c = ndi.shape
     pts = np.array(np.meshgrid(range(r), range(c))).T.reshape(r, c, 2)
@@ -35,6 +63,10 @@ def assoc_z_axis_cartesian(ndi: np.ndarray) -> np.ndarray:
 
 def product2(it1: Iterable, it2: Iterable) -> np.ndarray:
     return np.array(np.meshgrid(it1, it2)).T.reshape(-1, 2)
+
+
+def tabulate2(row: int, col: int) -> np.ndarray:
+    return product2(range(row), range(col)).reshape((row, col, 2))
 
 
 @deprecated
@@ -54,9 +86,14 @@ def to_pixel_pos(dimage: Image) -> np.ndarray:
     return assoc_z_axis_cartesian(depth_array)
 
 
-def to_camera_pos(pixel_pos: np.ndarray, focus: Point2d, center: Point2d) -> np.ndarray:
+def to_camera_pos(pixel_pos: np.ndarray, depths: np.ndarray, focus: Point2d, center: Point2d) -> np.ndarray:
     pixel_to_camera = pixel_to_camera_matrix(focus, center)
-    return np.matmul(pixel_pos, pixel_to_camera.T)
+    # Truncate invalid depth
+    depths = depths.copy() # type: np.ndarray
+    depths[depths >= invalid_depth] = 0
+    # Convert depths from mm to m
+    depths = depths / 1000
+    return np.matmul(pixel_pos * np.expand_dims(depths, 2), pixel_to_camera.T)
 
 
 def down_sampling(img: np.ndarray, scale_ratio: int = 4):
@@ -90,20 +127,54 @@ def get_world_pos_tensor(tensor: torch.Tensor, pos: np.ndarray, scale_ratio: int
     return torch.from_numpy(transformed)
 
 
-def pixel_to_world_pos_tensor(
+def pixel_to_world_pos_tensor_pixelwise(
         tensor: torch.Tensor, camera_to_world: np.ndarray, focus: Point2d, center: Point2d, scale_ratio: int = 4
 ) -> torch.Tensor:
     # w * h * 1 matrix -> w * h * 3
     # [[[1]]] -> [[[0, 0, 1]]] with its coordinates
     # Pixel_pos = Z_c * (u, v, 1)
-    pixel_pos = assoc_z_axis_cartesian(tensor.numpy().squeeze())
+    # pixel_pos = assoc_z_axis_cartesian(tensor.numpy().squeeze())
     # Clamp invalid numbers.
     # if Z_c = 0 then last coord must be 0.
     # In such case, just override it to 1.
-    pixel_pos[..., -1][pixel_pos[..., -1] == 0] = 1
+    # pixel_pos[..., -1][pixel_pos[..., -1] == 0] = 1
 
     # camera_pos = pixel_pos.T * inv(intrinsics_matrix).T
-    camera_pos = to_camera_pos(pixel_pos, focus, center)
+    # camera_pos = to_camera_pos(pixel_pos, focus, center)
+    # camera_pos = depth_to_camera_pixelwise(tensor.numpy().squeeze(), center, focus)
+
+    # down sampling by scale ratio
+    # camera_pos = down_sampling(camera_pos, scale_ratio)
+
+    # world_pos = (camera_pos, 1) * camera_to_world.T
+    # world_pos = camera_to_world_pos(camera_pos, camera_to_world)
+
+    # Transform back to cartesian coords.
+    # cartesian_world_pos = to_cartesian(world_pos)
+    cartesian_world_pos = depth_to_world_pixelwise(
+        tensor.numpy(), center, focus, camera_to_world
+    )
+    cartesian_world_pos = down_sampling(cartesian_world_pos, scale_ratio)
+    return torch.from_numpy(cartesian_world_pos)
+
+
+def pixel_to_world_pos_tensor(
+        tensor: torch.Tensor, camera_to_world: np.ndarray, focus: Point2d, center: Point2d, scale_ratio: int = 4
+) -> torch.Tensor:
+    # w * h * 1 matrix -> w * h * 3
+    # [[[1]]] -> [[[0, 0, 1]]] with its coordinates
+    # Pixel_pos = (u, v, 1)
+    depths = tensor.numpy().squeeze()  # type: np.ndarray
+    row, col = depths.shape
+    pixel_pos = to_homo(tabulate2(row, col))
+    # Clamp invalid numbers.
+    # if Z_c = 0 then last coord must be 0.
+    # In such case, just override it to 1.
+    # pixel_pos[..., -1][pixel_pos[..., -1] == 0] = 1
+
+    # camera_pos = pixel_pos.T * inv(intrinsics_matrix).T
+    camera_pos = to_camera_pos(pixel_pos, depths, focus, center)
+    # camera_pos = depth_to_camera_pixelwise(tensor.numpy().squeeze(), center, focus)
 
     # down sampling by scale ratio
     camera_pos = down_sampling(camera_pos, scale_ratio)
@@ -113,9 +184,30 @@ def pixel_to_world_pos_tensor(
 
     # Transform back to cartesian coords.
     cartesian_world_pos = to_cartesian(world_pos)
+    # cartesian_world_pos = depth_to_world_pixelwise(
+    #     tensor.numpy(), center, focus, camera_to_world
+    # )
     return torch.from_numpy(cartesian_world_pos)
 
 
-def reverse_diem(tensor: torch.Tensor) -> torch.Tensor:
-    batch, *shape = tensor.shape
-    return tensor.reshape(batch, *shape[::-1])
+def depth_to_world_pixelwise(dimage: np.ndarray, center: Point2d, focus: Point2d,
+                             camera_to_world: np.ndarray) -> np.ndarray:
+    arrays = []
+    r, c = dimage.shape
+    for u, row in enumerate(dimage):
+        for v, z in enumerate(row):
+            x, y, z = one_pixel_to_camera(u, v, z, center, focus)
+            camera = np.array([[x, y, z, 1]]).T
+            world = np.matmul(camera_to_world, camera).T.squeeze()
+            x, y, z, w = world
+            arrays.append(np.array([x / w, y / w, z / w]))
+
+    return np.array(arrays).reshape((r, c, 3))
+
+
+def one_pixel_to_camera(u, v, z, center: Point2d, focus: Point2d) -> list:
+    cx, cy = center
+    fx, fy = focus
+    x = (u - cx) * z / fx
+    y = (v - cy) * z / fy
+    return [x, y, z]
